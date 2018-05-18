@@ -27,7 +27,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
-	kubeadmapiext "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1alpha1"
+	kubeadmapiv1alpha1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1alpha1"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/phases/controlplane"
 	etcdphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/etcd"
@@ -188,6 +188,75 @@ func (spm *fakeStaticPodPathManager) BackupManifestDir() string {
 
 func (spm *fakeStaticPodPathManager) BackupEtcdDir() string {
 	return spm.backupEtcdDir
+}
+
+type fakeTLSEtcdClient struct{ TLS bool }
+
+func (c fakeTLSEtcdClient) HasTLS() bool {
+	return c.TLS
+}
+
+func (c fakeTLSEtcdClient) ClusterAvailable() (bool, error) { return true, nil }
+
+func (c fakeTLSEtcdClient) WaitForClusterAvailable(delay time.Duration, retries int, retryInterval time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (c fakeTLSEtcdClient) GetClusterStatus() (map[string]*clientv3.StatusResponse, error) {
+	return map[string]*clientv3.StatusResponse{
+		"foo": {
+			Version: "3.1.12",
+		}}, nil
+}
+
+func (c fakeTLSEtcdClient) GetClusterVersions() (map[string]string, error) {
+	return map[string]string{
+		"foo": "3.1.12",
+	}, nil
+}
+
+func (c fakeTLSEtcdClient) GetVersion() (string, error) {
+	return "3.1.12", nil
+}
+
+type fakePodManifestEtcdClient struct{ ManifestDir, CertificatesDir string }
+
+func (c fakePodManifestEtcdClient) HasTLS() bool {
+	hasTLS, _ := etcdutil.PodManifestsHaveTLS(c.ManifestDir)
+	return hasTLS
+}
+
+func (c fakePodManifestEtcdClient) ClusterAvailable() (bool, error) { return true, nil }
+
+func (c fakePodManifestEtcdClient) WaitForClusterAvailable(delay time.Duration, retries int, retryInterval time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (c fakePodManifestEtcdClient) GetClusterStatus() (map[string]*clientv3.StatusResponse, error) {
+	// Make sure the certificates generated from the upgrade are readable from disk
+	tlsInfo := transport.TLSInfo{
+		CertFile:      filepath.Join(c.CertificatesDir, constants.EtcdCACertName),
+		KeyFile:       filepath.Join(c.CertificatesDir, constants.EtcdHealthcheckClientCertName),
+		TrustedCAFile: filepath.Join(c.CertificatesDir, constants.EtcdHealthcheckClientKeyName),
+	}
+	_, err := tlsInfo.ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]*clientv3.StatusResponse{
+		"foo": {Version: "3.1.12"},
+	}, nil
+}
+
+func (c fakePodManifestEtcdClient) GetClusterVersions() (map[string]string, error) {
+	return map[string]string{
+		"foo": "3.1.12",
+	}, nil
+}
+
+func (c fakePodManifestEtcdClient) GetVersion() (string, error) {
+	return "3.1.12", nil
 }
 
 func TestStaticPodControlPlane(t *testing.T) {
@@ -365,8 +434,8 @@ func getAPIServerHash(dir string) (string, error) {
 	return fmt.Sprintf("%x", sha256.Sum256(fileBytes)), nil
 }
 
-func getConfig(version string) (*kubeadmapi.MasterConfiguration, error) {
-	externalcfg := &kubeadmapiext.MasterConfiguration{}
+func getConfig(version, certsDir, etcdDataDir string) (*kubeadmapi.MasterConfiguration, error) {
+	externalcfg := &kubeadmapiv1alpha1.MasterConfiguration{}
 	internalcfg := &kubeadmapi.MasterConfiguration{}
 	if err := runtime.DecodeInto(legacyscheme.Codecs.UniversalDecoder(), []byte(fmt.Sprintf(testConfiguration, version)), externalcfg); err != nil {
 		return nil, fmt.Errorf("unable to decode config: %v", err)
