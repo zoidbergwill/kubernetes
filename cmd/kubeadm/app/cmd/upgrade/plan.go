@@ -26,9 +26,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/validation"
+	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/features"
 	"k8s.io/kubernetes/cmd/kubeadm/app/phases/upgrade"
 	kubeadmutil "k8s.io/kubernetes/cmd/kubeadm/app/util"
+	etcdutil "k8s.io/kubernetes/cmd/kubeadm/app/util/etcd"
 )
 
 // NewCmdPlan returns the cobra command for `kubeadm upgrade plan`
@@ -88,7 +90,7 @@ func RunPlan(parentFlags *cmdUpgradeFlags) error {
 	}
 
 	// Compute which upgrade possibilities there are
-	availUpgrades, err := upgrade.GetAvailableUpgrades(upgradeVars.versionGetter, parentFlags.allowExperimentalUpgrades, parentFlags.allowRCUpgrades, etcdCluster, upgradeVars.cfg.FeatureGates)
+	availUpgrades, err := upgrade.GetAvailableUpgrades(upgradeVars.versionGetter, parentFlags.allowExperimentalUpgrades, parentFlags.allowRCUpgrades, etcdClient, upgradeVars.cfg.FeatureGates)
 	if err != nil {
 		return fmt.Errorf("[upgrade/versions] FATAL: %v", err)
 	}

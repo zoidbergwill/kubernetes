@@ -25,8 +25,6 @@ import (
 	"github.com/coreos/etcd/clientv3"
 	etcdutil "k8s.io/kubernetes/cmd/kubeadm/app/util/etcd"
 	versionutil "k8s.io/kubernetes/pkg/util/version"
-	"reflect"
-	"testing"
 )
 
 type fakeVersionGetter struct {
@@ -506,12 +504,7 @@ func TestGetAvailableUpgrades(t *testing.T) {
 	// Instantiating a fake etcd cluster for being able to get etcd version for a corresponding
 	// kubernetes release.
 	for _, rt := range tests {
-<<<<<<< HEAD
-
-		actualUpgrades, actualErr := GetAvailableUpgrades(rt.vg, rt.allowExperimental, rt.allowRCs, testCluster, featureGates)
-=======
 		actualUpgrades, actualErr := GetAvailableUpgrades(rt.vg, rt.allowExperimental, rt.allowRCs, rt.etcdClient, featureGates)
->>>>>>> aa7f374a58a... Merge pull request #63925 from detiber/external_etcd_upgrade_1_10
 		if !reflect.DeepEqual(actualUpgrades, rt.expectedUpgrades) {
 			t.Errorf("failed TestGetAvailableUpgrades\n\texpected upgrades: %v\n\tgot: %v", rt.expectedUpgrades, actualUpgrades)
 		}

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
@@ -27,6 +28,7 @@ import (
 	etcdphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/etcd"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
+	etcdutil "k8s.io/kubernetes/cmd/kubeadm/app/util/etcd"
 	"k8s.io/kubernetes/pkg/util/version"
 )
 
@@ -126,12 +128,21 @@ func (spm *KubeStaticPodPathManager) BackupEtcdDir() string {
 	return spm.backupEtcdDir
 }
 
-func upgradeComponent(component string, waiter apiclient.Waiter, pathMgr StaticPodPathManager, cfg *kubeadmapi.MasterConfiguration, beforePodHash string, recoverManifests map[string]string) error {
+func upgradeComponent(component string, waiter apiclient.Waiter, pathMgr StaticPodPathManager, cfg *kubeadmapi.MasterConfiguration, beforePodHash string, recoverManifests map[string]string, isTLSUpgrade bool) error {
 	// Special treatment is required for etcd case, when rollbackOldManifests should roll back etcd
 	// manifests only for the case when component is Etcd
 	recoverEtcd := false
 	if component == constants.Etcd {
 		recoverEtcd = true
+	}
+	if isTLSUpgrade {
+		// Normally, if an Etcd upgrade is successful, but the apiserver upgrade fails, Etcd is not rolled back.
+		// In the case of a TLS upgrade, the old KubeAPIServer config is incompatible with the new Etcd confg, so we rollback Etcd
+		// if the APIServer upgrade fails.
+		if component == constants.KubeAPIServer {
+			recoverEtcd = true
+			fmt.Printf("[upgrade/staticpods] The %s manifest will be restored if component %q fails to upgrade\n", constants.Etcd, component)
+		}
 	}
 	// The old manifest is here; in the /etc/kubernetes/manifests/
 	currentManifestPath := pathMgr.RealManifestPath(component)
@@ -227,6 +238,19 @@ func performEtcdStaticPodUpgrade(waiter apiclient.Waiter, pathMgr StaticPodPathM
 	if err := etcdphase.CreateLocalEtcdStaticPodManifestFile(pathMgr.TempManifestDir(), cfg); err != nil {
 		return true, fmt.Errorf("error creating local etcd static pod manifest file: %v", err)
 	}
+
+	// Waiter configurations for checking etcd status
+	noDelay := 0 * time.Second
+	podRestartDelay := noDelay
+	if isTLSUpgrade {
+		// If we are upgrading TLS we need to wait for old static pod to be removed.
+		// This is needed because we are not able to currently verify that the static pod
+		// has been updated through the apiserver across an etcd TLS upgrade.
+		// This value is arbitrary but seems to be long enough in manual testing.
+		podRestartDelay = 30 * time.Second
+	}
+	retries := 10
+	retryInterval := 15 * time.Second
 
 	// Perform etcd upgrade using common to all control plane components function
 	if err := upgradeComponent(constants.Etcd, waiter, pathMgr, cfg, beforeEtcdPodHash, recoverManifests, isTLSUpgrade); err != nil {
@@ -344,20 +368,23 @@ func StaticPodControlPlane(waiter apiclient.Waiter, pathMgr StaticPodPathManager
 	}
 
 	// etcd upgrade is done prior to other control plane components
-	if etcdUpgrade {
+	if !isExternalEtcd && etcdUpgrade {
+		previousEtcdHasTLS := oldEtcdClient.HasTLS()
+
+		// set the TLS upgrade flag for all components
+		isTLSUpgrade = !previousEtcdHasTLS
+		if isTLSUpgrade {
+			fmt.Printf("[upgrade/etcd] Upgrading to TLS for %s\n", constants.Etcd)
+		}
+
 		// Perform etcd upgrade using common to all control plane components function
-		fatal, err := performEtcdStaticPodUpgrade(waiter, pathMgr, cfg, recoverManifests)
+		fatal, err := performEtcdStaticPodUpgrade(waiter, pathMgr, cfg, recoverManifests, isTLSUpgrade, oldEtcdClient, newEtcdClient)
 		if err != nil {
 			if fatal {
 				return err
 			}
 			fmt.Printf("[upgrade/etcd] non fatal issue encountered during upgrade: %v\n", err)
 		}
-	}
-
-	beforePodHashMap, err := waiter.WaitForStaticPodControlPlaneHashes(cfg.NodeName)
-	if err != nil {
-		return err
 	}
 
 	// Write the updated static Pod manifests into the temporary directory
@@ -368,7 +395,7 @@ func StaticPodControlPlane(waiter apiclient.Waiter, pathMgr StaticPodPathManager
 	}
 
 	for _, component := range constants.MasterComponents {
-		if err = upgradeComponent(component, waiter, pathMgr, cfg, beforePodHashMap[component], recoverManifests); err != nil {
+		if err = upgradeComponent(component, waiter, pathMgr, cfg, beforePodHashMap[component], recoverManifests, isTLSUpgrade); err != nil {
 			return err
 		}
 	}

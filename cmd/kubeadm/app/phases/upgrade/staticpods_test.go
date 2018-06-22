@@ -21,10 +21,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/pkg/transport"
 	"k8s.io/apimachinery/pkg/runtime"
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmapiv1alpha1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1alpha1"
@@ -32,6 +35,7 @@ import (
 	"k8s.io/kubernetes/cmd/kubeadm/app/phases/controlplane"
 	etcdphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/etcd"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
+	etcdutil "k8s.io/kubernetes/cmd/kubeadm/app/util/etcd"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 )
 
@@ -374,7 +378,18 @@ func TestStaticPodControlPlane(t *testing.T) {
 		defer os.RemoveAll(pathMgr.TempManifestDir())
 		defer os.RemoveAll(pathMgr.BackupManifestDir())
 
-		oldcfg, err := getConfig("v1.7.0")
+		tempCertsDir, err := ioutil.TempDir("", "kubeadm-certs")
+		if err != nil {
+			t.Fatalf("couldn't create temporary certificates directory: %v", err)
+		}
+		defer os.RemoveAll(tempCertsDir)
+		tmpEtcdDataDir, err := ioutil.TempDir("", "kubeadm-etcd-data")
+		if err != nil {
+			t.Fatalf("couldn't create temporary etcd data directory: %v", err)
+		}
+		defer os.RemoveAll(tmpEtcdDataDir)
+
+		oldcfg, err := getConfig("v1.7.0", tempCertsDir, tmpEtcdDataDir)
 		if err != nil {
 			t.Fatalf("couldn't create config: %v", err)
 		}
@@ -393,12 +408,24 @@ func TestStaticPodControlPlane(t *testing.T) {
 			t.Fatalf("couldn't read temp file: %v", err)
 		}
 
-		newcfg, err := getConfig("v1.8.0")
+		newcfg, err := getConfig("v1.8.0", tempCertsDir, tmpEtcdDataDir)
 		if err != nil {
 			t.Fatalf("couldn't create config: %v", err)
 		}
 
-		actualErr := StaticPodControlPlane(waiter, pathMgr, newcfg, false)
+		actualErr := StaticPodControlPlane(
+			waiter,
+			pathMgr,
+			newcfg,
+			true,
+			fakeTLSEtcdClient{
+				TLS: false,
+			},
+			fakePodManifestEtcdClient{
+				ManifestDir:     pathMgr.RealManifestDir(),
+				CertificatesDir: newcfg.CertificatesDir,
+			},
+		)
 		if (actualErr != nil) != rt.expectedErr {
 			t.Errorf(
 				"failed UpgradeStaticPodControlPlane\n\texpected error: %t\n\tgot: %t",
